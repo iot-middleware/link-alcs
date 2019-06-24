@@ -24,12 +24,14 @@
 #include "CoAPPlatform.h"
 #include "CoAPInternal.h"
 
-void CoAPHexStr_dump(unsigned char *data, int datalen)
+void CoAPHexStr_dump(char* text, unsigned char *data, int datalen)
 {
     int index = 0;
+    char buf[16];
     for(index = 0; index < datalen; index++){
-        HAL_Printf("%02X", data[index]);
+        snprintf(buf + 2 * index, sizeof(buf) - 2 * index, "%02X", data[index]);
     }
+    COAP_DEBUG ("%s%s", text, buf);
 }
 
 #ifndef COAP_OBSERVE_SERVER_DISABLE
@@ -275,18 +277,15 @@ int CoAPObsServer_dump(CoAPContext *context)
     CoAPIntContext *ctx = (CoAPIntContext *)context;
 
     HAL_MutexLock(ctx->obsserver.list_mutex);
-    HAL_Printf("\r\nCoAP Observe Server Max Number %d, Cur Number %d\r\n",
+    COAP_DEBUG("\r\nCoAP Observe Server Max Number %d, Cur Number %d\r\n",
                         ctx->obsserver.maxcount, ctx->obsserver.count);
 
     list_for_each_entry(node, &ctx->obsserver.list, obslist, CoapObserver) {
-        HAL_Printf("Observe Server:\r\n");
-        HAL_Printf("\tRemote   %s:%d\r\n", node->remote.addr, node->remote.port);
-        HAL_Printf("\tToken    ");
-        CoAPHexStr_dump(node->token, node->tokenlen);
-        HAL_Printf("\r\n");
-        HAL_Printf("\tPath     ");
-        CoAPHexStr_dump((unsigned char *)node->p_resource_of_interest->path, COAP_PATH_DEFAULT_SUM_LEN);
-        HAL_Printf("\r\n\tHandler  %p\r\n", node->p_resource_of_interest->callback);
+        COAP_DEBUG("Observe Server:");
+        COAP_DEBUG("Remote   %s:%d", node->remote.addr, node->remote.port);
+        CoAPHexStr_dump("Token    ", node->token, node->tokenlen);
+        CoAPHexStr_dump("Path     ", (unsigned char *)node->p_resource_of_interest->path, COAP_PATH_DEFAULT_SUM_LEN);
+        COAP_DEBUG ("Handler  %p", node->p_resource_of_interest->callback);
     }
     HAL_MutexUnlock(ctx->obsserver.list_mutex);
 
@@ -453,18 +452,15 @@ int CoAPObsClient_dump(CoAPContext *context)
     CoAPIntContext *ctx = (CoAPIntContext *)context;
 
     HAL_MutexLock(ctx->obsclient.list_mutex);
-    HAL_Printf("\r\nCoAP Observe Client Max Number %d, Cur Number %d\r\n",
+    COAP_DEBUG ("\r\nCoAP Observe Client Max Number %d, Cur Number %d\r\n",
                         ctx->obsclient.maxcount, ctx->obsclient.count);
 
     list_for_each_entry(node, &ctx->obsclient.list, obslist, CoAPObservable) {
-        HAL_Printf("Observe Client:\r\n");
-        HAL_Printf("\tRemote   %s:%d\r\n", node->remote.addr, node->remote.port);
-        HAL_Printf("\tToken    ");
-        CoAPHexStr_dump(node->token, node->tokenlen);
-        HAL_Printf("\r\n");
-        HAL_Printf("\tPath     ");
-        CoAPHexStr_dump(node->path, COAP_PATH_DEFAULT_SUM_LEN);
-        HAL_Printf("\r\n\tHandler  %p\r\n", node->callback);
+        COAP_DEBUG("Observe Client:");
+        COAP_DEBUG("Remote   %s:%d", node->remote.addr, node->remote.port);
+        CoAPHexStr_dump("Token    ", node->token, node->tokenlen);
+        CoAPHexStr_dump("Path     ", node->path, COAP_PATH_DEFAULT_SUM_LEN);
+        COAP_DEBUG("Handler  %p", node->callback);
     }
     HAL_MutexUnlock(ctx->obsclient.list_mutex);
 

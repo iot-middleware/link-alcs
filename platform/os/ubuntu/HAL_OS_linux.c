@@ -50,12 +50,14 @@
 void *HAL_MutexCreate(void)
 {
     int err_num;
+    pthread_mutexattr_t attr;
     pthread_mutex_t *mutex = (pthread_mutex_t *)HAL_Malloc(sizeof(pthread_mutex_t));
     if (NULL == mutex) {
         return NULL;
     }
-
-    if (0 != (err_num = pthread_mutex_init(mutex, NULL))) {
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    if (0 != (err_num = pthread_mutex_init(mutex, &attr))) {
         perror("create mutex failed");
         HAL_Free(mutex);
         return NULL;
@@ -247,94 +249,6 @@ int HAL_SemaphoreWait(_IN_ void *sem, _IN_ uint32_t timeout_ms)
     } while (((s = sem_timedwait(sem, &ts)) != 0) && errno == EINTR);
 
     return (s == 0) ? 0 : -1;
-}
-
-/* posix timer is thread-safe, ref:http://pubs.opengroup.org/onlinepubs/9699919799/functions/V2_chap02.html#tag_15_09_01 */
-void *HAL_Timer_Create(const char *name, void (*func)(void *), void *user_data)
-{
-    timer_t *timer = NULL;
-
-    struct sigevent ent;
-
-    /* check parameter */
-    if(func == NULL)    return NULL;
-
-    timer = (timer_t *)malloc(sizeof(time_t));
-    if (timer == NULL)  return NULL;
-
-    /* Init */
-    memset(&ent, 0x00, sizeof(struct sigevent));
-    
-    /* create a timer */
-    ent.sigev_notify = SIGEV_THREAD;
-    ent.sigev_notify_function = (void (*)(union sigval))func;
-    ent.sigev_value.sival_ptr = user_data;
-
-    hal_printf("\nHAL_Timer_Create:%p\n", timer);
-
-    if(timer_create(CLOCK_MONOTONIC, &ent, timer) != 0) {
-        fprintf(stderr, "timer_create");
-        free (timer);
-        return NULL;
-    }
-
-    return (void *)timer;
-}
-
-int HAL_Timer_Start(void *timer, int ms)
-{
-    struct itimerspec ts;
-
-    /* check parameter */
-    if(timer == NULL)   return -1;
-
-    /* it_interval=0: timer run only once */
-    ts.it_interval.tv_sec = 0;
-    ts.it_interval.tv_nsec = 0;
-
-    /* it_value=0: stop timer */
-    ts.it_value.tv_sec = ms / 1000;
-    ts.it_value.tv_nsec = (ms % 1000) * 1000;
-
-    hal_printf("\nHAL_Timer_Start:%p\n", timer);
-
-    return timer_settime(*(timer_t *)timer, 0, &ts, NULL);
-}
-
-int HAL_Timer_Stop(void *timer)
-{
-    struct itimerspec ts;
-
-    /* check parameter */
-    if(timer == NULL)   return -1;
-
-    /* it_interval=0: timer run only once */
-    ts.it_interval.tv_sec = 0;
-    ts.it_interval.tv_nsec = 0;
-
-    /* it_value=0: stop timer */
-    ts.it_value.tv_sec = 0;
-    ts.it_value.tv_nsec = 0;
-
-    hal_printf("\nHAL_Timer_Stop:%p\n", timer);
-
-    return timer_settime(*(timer_t *)timer, 0, &ts, NULL);
-}
-
-int HAL_Timer_Delete(void *timer)
-{
-    int ret = 0;
-
-    /* check parameter */
-    if(timer == NULL)   return -1;
-
-    hal_printf("\nHAL_Timer_Delete:%p\n", timer);
-
-    ret = timer_delete(*(timer_t *)timer);
-
-    free(timer);
-
-    return ret;
 }
 
 static kv_file_t *kvfile = NULL;

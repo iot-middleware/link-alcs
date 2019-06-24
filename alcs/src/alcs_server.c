@@ -15,6 +15,9 @@
 int sessionid_seed = 0xff;
 static int default_heart_expire = 120000;
 
+extern
+int seqwindow_accept (CoAPMessage *message, session_item* session);
+
 void alcs_rec_auth_select (CoAPContext *ctx, const char *paths, NetworkAddr* from, CoAPMessage* resMsg)
 {
     int seqlen = 0, datalen = 0;
@@ -259,7 +262,7 @@ void alcs_rec_auth (CoAPContext *ctx, const char *paths, NetworkAddr* from, CoAP
         gen_random_key((unsigned char *)session->randomKey, RANDOMKEY_LEN);
         session->sessionId = ++sessionid_seed;
         //generate seqStart
-        srand((unsigned)time(NULL));
+        HAL_Srandom ((uint32_t)HAL_UptimeMs()); 
         session->seqStart = rand() % 1000000;
 
         char path[100] = {0}; 
@@ -320,7 +323,7 @@ int add_svr_key (CoAPContext *ctx, const char* keyprefix, const char* secret, bo
     auth_list *lst = dev_lst ? &dev_lst->lst_auth : NULL;
 
     if (!lst || lst->svr_count >= ALCS_MAX_SERVER_AUTHCODE_COUNT || strlen(keyprefix) != KEYPREFIX_LEN) {
-        return COAP_ERROR_INVALID_LENGTH;
+        return ALCS_ERR_INVALID_LENGTH;
     }
 
     HAL_MutexLock(dev_lst->list_mutex);
@@ -336,13 +339,13 @@ int add_svr_key (CoAPContext *ctx, const char* keyprefix, const char* secret, bo
 
     svr_key_item* item = (svr_key_item*) coap_malloc(sizeof(svr_key_item));
     if (!item) {
-        return COAP_ERROR_MALLOC;
+        return ALCS_ERR_MALLOC;
     }
 
     item->keyInfo.secret = (char*) coap_malloc(strlen(secret) + 1);
     if (!item->keyInfo.secret) {
         coap_free (item);
-        return COAP_ERROR_MALLOC;
+        return ALCS_ERR_MALLOC;
     }
     strcpy (item->keyInfo.secret, secret);
     strcpy (item->keyInfo.keyprefix, keyprefix);
@@ -352,7 +355,7 @@ int add_svr_key (CoAPContext *ctx, const char* keyprefix, const char* secret, bo
     ++lst->svr_count;
     HAL_MutexUnlock(dev_lst->list_mutex);
 
-    return COAP_SUCCESS;
+    return ALCS_SUCCESS;
 }
 
 int alcs_add_svr_key (CoAPContext *ctx, const char* keyprefix, const char* secret)
@@ -367,7 +370,7 @@ int alcs_remove_svr_key (CoAPContext *ctx, const char* keyprefix)
     device_auth_list *dev_lst = get_device (ctx);
     auth_list *lst = dev_lst ? &dev_lst->lst_auth : NULL;
     if (!lst) {
-        return COAP_ERROR_NULL;
+        return ALCS_ERR_NULL;
     }
 
     svr_key_item *node = NULL, *next = NULL;
@@ -383,7 +386,7 @@ int alcs_remove_svr_key (CoAPContext *ctx, const char* keyprefix)
     }
     HAL_MutexUnlock(dev_lst->list_mutex);
 
-    return COAP_SUCCESS;
+    return ALCS_SUCCESS;
 }
 
 int alcs_set_revocation (CoAPContext *ctx, const char* seqlist)
@@ -391,7 +394,7 @@ int alcs_set_revocation (CoAPContext *ctx, const char* seqlist)
     device_auth_list *dev_lst = get_device (ctx);
     auth_list *lst = dev_lst ? &dev_lst->lst_auth : NULL;
     if (!lst) {
-        return COAP_ERROR_NULL;
+        return ALCS_ERR_NULL;
     }
 
     HAL_MutexLock(dev_lst->list_mutex);
@@ -408,7 +411,7 @@ int alcs_set_revocation (CoAPContext *ctx, const char* seqlist)
     }
     HAL_MutexUnlock(dev_lst->list_mutex);
 
-    return COAP_SUCCESS;
+    return ALCS_SUCCESS;
 }
 
 //-----------------------------------------
@@ -472,7 +475,7 @@ void recv_msg_handler (CoAPContext *context, const char *path, NetworkAddr *remo
         }
 
         unsigned int obsVal;
-        if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) == COAP_SUCCESS) {
+        if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) == ALCS_SUCCESS) {
             if (obsVal == 0) {
                 CoAPObsServer_add (context, path, remote, message);
             }
@@ -542,7 +545,7 @@ int alcs_resource_unregister_secure (CoAPContext *context, const char *path)
     list_del (&node->lst);
     CoAPResource_unregister(context, path);
     coap_free (node);
-    return COAP_SUCCESS;
+    return ALCS_SUCCESS;
 }
 
 void alcs_resource_cb_deinit(void)
@@ -639,7 +642,7 @@ int observe_data_encrypt(CoAPContext *ctx, const char* path, NetworkAddr* from, 
 
     secure_resource_cb_item* node = get_resource_by_path (path);
     if (!node) {
-        return COAP_ERROR_NOT_FOUND;
+        return ALCS_ERR_NOT_FOUND;
     }
 
     struct list_head* sessions = get_svr_session_list(ctx);
@@ -650,14 +653,19 @@ int observe_data_encrypt(CoAPContext *ctx, const char* path, NetworkAddr* from, 
         dest->data  = (unsigned char*)coap_malloc(dest->len);
         add_message_sessionid (message, session->sessionId, session->opt, src);
         alcs_encrypt ((const char*)src->data, src->len, session->sessionKey, dest->data);
-        return COAP_SUCCESS;
+        return ALCS_SUCCESS;
     }
 
-    return COAP_ERROR_NOT_FOUND;
+    return ALCS_ERR_NOT_FOUND;
 }
 
 void on_svr_auth_timer (CoAPContext* ctx)
 {
+     device_auth_list* dev = get_device (ctx);
+     if (!dev->is_inited) {
+         return;
+     }
+
     struct list_head* head = get_svr_session_list (ctx);
     if (!head || list_empty(head)) {
         return;
@@ -667,8 +675,7 @@ void on_svr_auth_timer (CoAPContext* ctx)
     //device_auth_list* dev = get_device (ctx);
     int tick = HAL_UptimeMs();
 
-    device_auth_list *dev_lst = get_device (ctx);
-    HAL_MutexLock(dev_lst->list_mutex);
+    HAL_MutexLock(dev->list_mutex);
     session_item *node = NULL, *next = NULL;
     list_for_each_entry_safe(node, next, head, lst, session_item) {
         if(node->sessionId && node->heartRecTime + default_heart_expire < tick) {
@@ -676,7 +683,7 @@ void on_svr_auth_timer (CoAPContext* ctx)
             remove_session (ctx, node);
         }
     }
-    HAL_MutexUnlock(dev_lst->list_mutex);
+    HAL_MutexUnlock(dev->list_mutex);
 
 }
 #endif

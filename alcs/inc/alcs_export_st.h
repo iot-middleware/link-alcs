@@ -25,12 +25,12 @@ typedef enum {
 } alcs_log_level;
 
 typedef enum alcs_error_code {
-    ALCS_RESULT_OK,
-    ALCS_RESULT_FAIL,
-    ALCS_RESULT_INSUFFICIENT_MEM,
-    ALCS_RESULT_NOTFOUND,
-    ALCS_RESULT_INVALIDPARAM,
-    ALCS_RESULT_DUPLICATE  
+    ALCS_RESULT_OK = 0,
+    ALCS_RESULT_DUPLICATE,
+    ALCS_RESULT_FAIL = -1,
+    ALCS_RESULT_INSUFFICIENT_MEM = -2,
+    ALCS_RESULT_NOTFOUND = -3,
+    ALCS_RESULT_INVALIDPARAM = -4
 } alcs_error_code_t;
 
 typedef enum {
@@ -137,6 +137,22 @@ typedef struct alcs_device_discovery_info {
 } alcs_device_discovery_info_t, *alcs_device_discovery_info_pt;
 typedef void (*alcs_discovery_cb)(alcs_device_discovery_info_pt device);
 
+typedef struct alcs_prob_param {
+    alcs_network_addr_t addr;
+    char* pk;   //productKey
+    char* dn;   //deviceName
+    void *user_data;
+} alcs_prob_param_t, *alcs_prob_param_pt;
+
+typedef struct alcs_probe_result {
+    int result_code;   //see alcs_send_code_t 
+    int error_reason;
+    char* pk;   //productKey
+    char* dn;   //deviceName
+    void* user_data;
+} alcs_probe_result_t, *alcs_probe_result_pt;
+
+typedef void (*alcs_probe_cb)(alcs_probe_result_pt result);
 
 typedef struct alcs_service_param {
     void* service;

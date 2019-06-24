@@ -20,22 +20,31 @@
 #define SESSIONID_LEN 8
 #define SESSIONKEY_MAXLEN 30
 
+#define ALCS_SUCCESS                         COAP_SUCCESS
 #define ALCS_ERR_AUTH_BASE                   (COAP_ERROR_BASE | 100)
 #define ALCS_ERR_AUTH_AUTHING                (ALCS_ERR_AUTH_BASE | 1)
 #define ALCS_ERR_AUTH_NOCTLKEY               (ALCS_ERR_AUTH_BASE | 2)
 #define ALCS_ERR_AUTH_UNAUTH                 (ALCS_ERR_AUTH_BASE | 3)
 #define ALCS_ERR_ENCRYPT_FAILED              (ALCS_ERR_AUTH_BASE | 5)
+#define ALCS_ERR_BASE                        (COAP_ERROR_BASE | 200)
+#define ALCS_ERR_NULL                        (ALCS_ERR_BASE | 1)
+#define ALCS_ERR_INVALID_PARAM               (ALCS_ERR_BASE | 2)
+#define ALCS_ERR_MALLOC                      (ALCS_ERR_BASE | 3)
+#define ALCS_ERR_INVALID_LENGTH              (ALCS_ERR_BASE | 4)
+#define ALCS_ERR_NOT_FOUND                   (ALCS_ERR_BASE | 5)
+#define ALCS_ERR_INTERNAL                    (ALCS_ERR_BASE | 99)
 
 typedef enum {
     ALCS_AUTH_OK       = 200,
     ALCS_AUTH_REVOCATE = 501,
-    ALCS_AUTH_UNMATCHPREFIX,
-    ALCS_AUTH_INVALIDPARAM,
-    ALCS_AUTH_AUTHLISTEMPTY,
-    ALCS_AUTH_VERNOTSUPPORT,
-    ALCS_AUTH_ILLEGALSIGN,
-    ALCS_AUTH_INTERNALERROR,
+    ALCS_AUTH_UNMATCHPREFIX = 502,
+    ALCS_AUTH_INVALIDPARAM = 503,
+    ALCS_AUTH_AUTHLISTEMPTY = 504,
+    ALCS_AUTH_VERNOTSUPPORT = 505,
+    ALCS_AUTH_ILLEGALSIGN = 506,
+    ALCS_AUTH_TIMEOUT = 507,
     ALCS_HEART_FAILAUTH,
+    ALCS_AUTH_INTERNALERROR = 510  
 } Auth_Result_Code;
 
 #define ALCSCLIENT 1
@@ -112,7 +121,7 @@ int alcs_sendrsp_secure(CoAPContext *ctx, AlcsDeviceKey* devKey, CoAPMessage *me
  *  addr：      待连设备地址
  *  auth_param：包含待连设备的信息和回调接口
  */
-void alcs_auth_has_key (CoAPContext *ctx, NetworkAddr* addr, AuthParam* auth_param);
+int alcs_auth_has_key (CoAPContext *ctx, NetworkAddr* addr, AuthParam* auth_param);
 
 /*  身份认证--通过productkey&devicename在缓存的accesskey列表中查找合适accesskey
  *  此函数需要和alcs_add_client_key 配合使用
@@ -124,7 +133,7 @@ void alcs_auth_has_key (CoAPContext *ctx, NetworkAddr* addr, AuthParam* auth_par
  *  deviceName：待连设备的deviceName
  *  handler：   结果回调接口
  */
-void alcs_auth_nego_key (CoAPContext *ctx, AlcsDeviceKey* devKey, AuthHandler handler);
+int alcs_auth_nego_key (CoAPContext *ctx, AlcsDeviceKey* devKey, AuthHandler handler);
 
 /*  断开session
  *

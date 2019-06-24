@@ -28,7 +28,7 @@ extern "C" {
 typedef struct
 {
     CoAPMsgHeader            header;
-    unsigned char            retrans_count;
+    unsigned char            retrans_remain;
     unsigned char            token[COAP_MSG_MAX_TOKEN_LEN];
     uint64_t                 timeout;
     unsigned short           timeout_val;

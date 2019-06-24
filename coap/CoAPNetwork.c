@@ -42,6 +42,7 @@ typedef struct
 
 int CoAPNetwork_read(NetworkContext         *p_context,
                             NetworkAddr     *p_remote,
+                            NetworkAddr     *p_local,
                             unsigned char   *p_data,
                             unsigned int     datalen,
                             unsigned int     timeout_ms)
@@ -67,6 +68,9 @@ int CoAPNetwork_read(NetworkContext         *p_context,
 #endif
         len =  HAL_UDP_recvfrom(network->fd, p_remote, p_data,
                             datalen, timeout_ms);
+        
+        p_local->port = network->port;
+        HAL_Wifi_Get_IP(p_local->addr, "");
         //COAP_DEBUG("Network read return %d", len);
 #ifdef COAP_DTLS_SUPPORT
     }

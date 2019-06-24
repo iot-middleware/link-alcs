@@ -6,12 +6,15 @@ extern "C" {
 
 typedef enum {
     ALCS_CONN_OK       = 200,
+    ALCS_CONN_CONNECTING = 300,
     ALCS_CONN_REVOCATE = 501,
     ALCS_CONN_UNMATCHPREFIX = 502,
     ALCS_CONN_INVALIDPARAM = 503,
     ALCS_CONN_AUTHLISTEMPTY = 504,
     ALCS_CONN_VERNOTSUPPORT = 505,
     ALCS_CONN_ILLEGALSIGN = 506,
+    ALCS_CONN_TIMEOUT = 507,
+    ALCS_CONN_INTERNAL = 510
 } alcs_connect_code;
 
 typedef enum alcs_message_type {
@@ -89,6 +92,7 @@ typedef struct alcs_msg_param_option {
     char* method;
     alcs_msg_code_t msg_code;
     alcs_msg_type_t msg_type;
+    int msgId;// 输出coap msgid
 } alcs_msg_param_option_t, *alcs_msg_param_option_pt;
 
 typedef struct alcs_rsp_msg_param_option {

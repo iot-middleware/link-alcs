@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <string.h>
 #include "iot_import.h"
+#include "ifaddrs.h"
 
 void HAL_Get_broadcast_ip (char ip[16])
 {
@@ -37,84 +38,33 @@ void HAL_Get_broadcast_ip (char ip[16])
     strcpy (ip, "255.255.255.255");    
 }
 
-#define ROUTER_INFO_PATH        "/proc/net/route"
-#define ROUTER_RECORD_SIZE      256
-char *platform_get_default_routing_ifname(char *ifname, int ifname_size)
-{
-    FILE *fp = NULL;
-    char line[ROUTER_RECORD_SIZE] = {0};
-    char iface[IFNAMSIZ] = {0};
-    char *result = NULL;
-    unsigned int destination, gateway, flags, mask;
-    unsigned int refCnt, use, metric, mtu, window, irtt;
-
-    fp = fopen(ROUTER_INFO_PATH, "r");
-    if (fp == NULL) {
-        perror("fopen");
-        return result;
-    }
-
-    char *buff = fgets(line, sizeof(line), fp);
-    if (buff == NULL) {
-        perror("fgets");
-        goto out;
-    }
-
-    while (fgets(line, sizeof(line), fp)) {
-        if (11 !=
-            sscanf(line, "%s %08x %08x %x %d %d %d %08x %d %d %d",
-                   iface, &destination, &gateway, &flags, &refCnt, &use,
-                   &metric, &mask, &mtu, &window, &irtt)) {
-            perror("sscanf");
-            continue;
-        }
-
-        /*default route */
-        if ((destination == 0) && (mask == 0)) {
-            strncpy(ifname, iface, ifname_size - 1);
-            result = ifname;
-            break;
-        }
-    }
-
-out:
-    if (fp) {
-        fclose(fp);
-    }
-
-    return result;
-}
-
 int HAL_Wifi_Get_IP (char ip_str[HAL_IP_LEN], const char *ifname)
 {
-    struct ifreq ifreq;
-    int sock = -1;
-    char ifname_buff[IFNAMSIZ] = {0};
+    struct ifaddrs *interfaces = NULL;
+    struct ifaddrs *temp_addr = NULL;
+    
+    int success = 0;
+    // retrieve the current interfaces - returns 0 on success
+    success = getifaddrs(&interfaces);
+    if (success == 0) {
+        // Loop through linked list of interfaces
+        temp_addr = interfaces;
+        while(temp_addr != NULL) {
+            if(temp_addr->ifa_addr->sa_family == AF_INET) {
+                // Check if interface is en0 which is the wifi connection on the iPhone
+                if(strcmp(temp_addr->ifa_name, "en0") == 0
+                   || strcmp(temp_addr->ifa_name, "pdp_ip0")) {
 
-    if((NULL == ifname || strlen(ifname) == 0) &&
-        NULL == (ifname = platform_get_default_routing_ifname(ifname_buff, sizeof(ifname_buff)))){
-        return -1;
+                    struct sockaddr_in *addr4 = (struct sockaddr_in *)(temp_addr->ifa_addr);
+                    inet_ntop(AF_INET, &(addr4->sin_addr), ip_str, HAL_IP_LEN);
+                }
+            }
+            temp_addr = temp_addr->ifa_next;
+        }
     }
-
-    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        return -1;
-    }
-
-    ifreq.ifr_addr.sa_family = AF_INET; //ipv4 address
-    strncpy(ifreq.ifr_name, ifname, IFNAMSIZ - 1);
-
-    if (ioctl(sock, SIOCGIFADDR, &ifreq) < 0) {
-        close(sock);
-        return -1;
-    }
-
-    close(sock);
-
-    strncpy(ip_str,
-            inet_ntoa(((struct sockaddr_in *)&ifreq.ifr_addr)->sin_addr),
-            HAL_IP_LEN);
-
-    return ((struct sockaddr_in *)&ifreq.ifr_addr)->sin_addr.s_addr;
+    // Free/release memory
+    freeifaddrs(interfaces);
+    return 0;
 }
 
 /**

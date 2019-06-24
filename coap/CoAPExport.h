@@ -288,7 +288,7 @@ extern int CoAPMessage_init(CoAPMessage *message);
 extern int CoAPMessage_destory(CoAPMessage *message);
 
 extern int CoAPMessage_send(CoAPContext *context, NetworkAddr *remote, CoAPMessage *message);
-
+extern int CoAPMessage_send_ex(CoAPContext *context, NetworkAddr *remote, CoAPMessage *message, int retryTimes);
 extern int CoAPMessage_cycle(CoAPContext *context);
 
 extern int CoAPMessage_keep(CoAPMessage *message);

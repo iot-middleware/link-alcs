@@ -56,8 +56,9 @@ int CoAPNetwork_write(NetworkContext          *p_context,
                                   unsigned int          timeout);
 
 int CoAPNetwork_read(NetworkContext *p_context,
-                            NetworkAddr    *p_remote,
-                            unsigned char  *p_data,
+                            NetworkAddr  *p_remote,
+                            NetworkAddr  *p_local,
+                            unsigned char *p_data,
                             unsigned int datalen,
                             unsigned int timeout);
 

@@ -7,14 +7,14 @@
 #include "alcs_api_internal.h"
 #include "lite-list.h"
 
-#ifndef SUPPORT_MULTI_DEVICES
+#ifdef SHARE_COAP_CONTEXT 
 #include "CoAPServer.h"
 #endif
 
 #define MAX_PATH_CHECKSUM_LEN (5)
 typedef struct
 {
-    char               path[MAX_PATH_CHECKSUM_LEN];
+    char path[MAX_PATH_CHECKSUM_LEN];
     CoAPRecvMsgHandler cb;
     struct list_head   lst;
 } resource_cb_item;
@@ -25,43 +25,48 @@ static void *context_mutex = NULL;
 static uint32_t tokenSeed = 0;
 uint32_t getToken ()
 {
-	if (tokenSeed == 0) {
-		HAL_Srandom ((uint32_t)HAL_UptimeMs());
-		tokenSeed = HAL_Random (0xffffffff);
-	} else {
-		++tokenSeed;
-	}
-
-	return tokenSeed;
+    uint32_t token;
+    HAL_MutexLock(context_mutex);
+    if (tokenSeed == 0) {
+        HAL_Srandom ((uint32_t)HAL_UptimeMs());
+        token = tokenSeed = HAL_Random (0xffffffff);
+    } else {
+        token = ++tokenSeed;
+    }
+    HAL_MutexUnlock(context_mutex);
+    
+    return token;
 }
 
 void alcs_msg_init(CoAPContext *ctx, CoAPMessage *message, int code, unsigned char type,
 	int keep, CoAPLenString *payload, void *userdata)
 {
     CoAPMessage_init (message);
-	message->header.code = code;
-	message->header.type = type;
-	message->user = userdata;
-	message->payload = payload->data;
-	message->payloadlen = payload->len;
-    message->keep = keep;
+    message->header.code = code;
+    message->header.type = type;
+    message->user = userdata;
+    message->payload = payload->data;
+    message->payloadlen = payload->len;
+    if (keep) {
+        CoAPMessage_keep (message);
+    }
 
-	message->header.msgid = CoAPMessageId_gen (ctx);
-	message->header.tokenlen = 4;
-	uint32_t token = getToken ();
-	memcpy (&message->token, &token, 4);
+    message->header.msgid = CoAPMessageId_gen (ctx);
+    message->header.tokenlen = 4;
+    uint32_t token = getToken ();
+    memcpy (&message->token, &token, 4);
 }
 
 void alcs_msg_deinit(CoAPMessage *message)
 {
-	CoAPMessage_destory (message);
+    CoAPMessage_destory (message);
 }
 
 static int do_sendmsg (CoAPContext *context, NetworkAddr* addr, CoAPMessage *message, char observe, unsigned short msgid, CoAPLenString* token)
 {
-    int ret = COAP_SUCCESS;
+    int ret = ALCS_SUCCESS;
     if (!context || !addr || !message) {
-        return COAP_ERROR_NULL;
+        return ALCS_ERR_NULL;
     }
 
     if (msgid == 0) {
@@ -87,14 +92,14 @@ static int do_sendmsg (CoAPContext *context, NetworkAddr* addr, CoAPMessage *mes
 int alcs_sendmsg(CoAPContext *context, NetworkAddr* addr, CoAPMessage *message, char observe, CoAPSendMsgHandler handler)
 {
     message->handler = handler;
-	return do_sendmsg (context, addr, message, observe, message->header.msgid, NULL);
+    return do_sendmsg (context, addr, message, observe, message->header.msgid, NULL);
 }
 
 //msgid & token从接收到CoAPMessage获取
 //若发送
 int alcs_sendrsp(CoAPContext *context, NetworkAddr* addr, CoAPMessage *message, char observe, unsigned short msgid, CoAPLenString* token)
 {
-	return do_sendmsg (context, addr, message, observe, msgid, token);
+    return do_sendmsg (context, addr, message, observe, msgid, token);
 }
 
 //observe
@@ -129,7 +134,7 @@ static void recv_msg_handler (CoAPContext *context, const char *path, NetworkAdd
 
     list_for_each_entry_safe(node, next, &resource_cb_head, lst, resource_cb_item) {
         if (0 == memcmp(path_calc, node->path, MAX_PATH_CHECKSUM_LEN)) {
-            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) == COAP_SUCCESS) {
+            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) == ALCS_SUCCESS) {
                 if (obsVal == 0) {
                     CoAPObsServer_add (context, path, remote, message);
                 }
@@ -148,7 +153,7 @@ static void recv_msg_handler (CoAPContext *context, const char *path, NetworkAdd
 int alcs_resource_register(CoAPContext *context, const char* pk, const char* dn, const char *path, unsigned short permission,
             unsigned int ctype, unsigned int maxage, char needAuth, CoAPRecvMsgHandler callback)
 {
-	COAP_INFO("ALCS Resource Register: %s",path);
+    COAP_INFO("ALCS Resource Register: %s",path);
 	
     if (!needAuth) {
         resource_cb_item* item = (resource_cb_item*)coap_malloc (sizeof(resource_cb_item));
@@ -195,7 +200,7 @@ int alcs_resource_unregister(CoAPContext *context, const char *path)
     list_del (&node->lst);
     CoAPResource_unregister(context, path); 
     coap_free (node);
-    return COAP_SUCCESS;
+    return ALCS_SUCCESS;
 }
 
 int alcs_resource_need_auth (CoAPContext *context, const char *path)
@@ -203,35 +208,15 @@ int alcs_resource_need_auth (CoAPContext *context, const char *path)
     return get_resource_by_path (context, path) == NULL;
 }
 
-#define INIT    0x1
-#define RUNNING 0x2
-#define TORUN 0x4
+#define RUNNING 0x1
+#define TORUN 0x2
 typedef struct {
     CoAPContext* ctx;
     char flag;
-    struct list_head lst;
+    int refCount;
 } ALCSContext;
 
-#ifdef SUPPORT_MULTI_DEVICES
-static LIST_HEAD(context_head);
-
-ALCSContext* get_context (CoAPContext* ctx) {
-    ALCSContext* node = NULL, *next = NULL;
-
-    list_for_each_entry_safe(node, next, &context_head, lst, ALCSContext) {
-        if(node->ctx == ctx){
-            return node;
-        }
-    }
-    return NULL;
-}
-#else
-ALCSContext* g_alcs_ctx = NULL;
-ALCSContext* get_context (CoAPContext* ctx) {
-    return g_alcs_ctx;
-}
-
-#endif
+ALCSContext g_alcs_ctx = {0};
 
 extern void on_auth_timer (void* arg);
 
@@ -240,7 +225,9 @@ void* thread_routine (void * arg)
     COAP_DEBUG("thread_routine");
 
     ALCSContext*ctx = (ALCSContext*)arg;
+    HAL_MutexLock(context_mutex);
     ctx->flag |= RUNNING;
+    HAL_MutexUnlock(context_mutex);
 
     while (ctx->flag & TORUN) {
         CoAPMessage_cycle (ctx->ctx);
@@ -249,93 +236,84 @@ void* thread_routine (void * arg)
 #endif
     }
 
-    if (!(ctx->flag & INIT)) {
-#ifdef SUPPORT_MULTI_DEVICES
-        HAL_MutexLock(context_mutex);
-        list_del(&ctx->lst);
-        HAL_MutexUnlock(context_mutex);
-#endif
+    HAL_MutexLock(context_mutex);
+    if (g_alcs_ctx.refCount <= 0) {
         CoAPContext_free (ctx->ctx);
-        coap_free (ctx);
-    } else {
-        ctx->flag &= ~RUNNING;
+        ctx->ctx = NULL;
     }
+    ctx->flag &= ~RUNNING;
+    HAL_MutexUnlock(context_mutex);
+
     COAP_INFO("thread_routine quit");
 
     return NULL;
 }
 
-#ifdef SUPPORT_MULTI_DEVICES
 CoAPContext *alcs_context_create(CoAPInitParam *param)
 {
-    ALCSContext* alcs_ctx = (ALCSContext*) coap_malloc (sizeof(ALCSContext));
-    alcs_ctx->ctx = CoAPContext_create (param);
-    COAP_INFO("CoAPContext_create return :%p", alcs_ctx->ctx);
-    alcs_ctx->flag = INIT;
-
     HAL_MutexLock(context_mutex);
-    list_add_tail(&alcs_ctx->lst, &context_head);
+    if (!g_alcs_ctx.refCount) {   
+        g_alcs_ctx.ctx = CoAPContext_create (param);
+        COAP_INFO("CoAPContext_create return :%p", g_alcs_ctx.ctx);
+        g_alcs_ctx.flag = 0;
+    }
+    ++ g_alcs_ctx.refCount;
     HAL_MutexUnlock(context_mutex);
 
-    return alcs_ctx->ctx;
+    return g_alcs_ctx.ctx;
 }
 
 void alcs_context_free(CoAPContext *ctx)
 {
     HAL_MutexLock(context_mutex);
-
-    ALCSContext* alcs_ctx = get_context (ctx);
-    if (!alcs_ctx) {
-        HAL_MutexUnlock(context_mutex);
-        return;
+    if (g_alcs_ctx.refCount > 0) {
+        -- g_alcs_ctx.refCount;
+        if (g_alcs_ctx.refCount <= 0) {
+            if (!(g_alcs_ctx.flag & RUNNING)) {
+                CoAPContext_free (g_alcs_ctx.ctx);
+                g_alcs_ctx.ctx = NULL;
+                g_alcs_ctx.flag = 0;
+            }
+        }
     }
-    if (!(alcs_ctx->flag & RUNNING)) {
-        list_del(&alcs_ctx->lst);
-        CoAPContext_free (alcs_ctx->ctx);
-        coap_free (alcs_ctx);
-    } else {
-        alcs_ctx->flag &= ~INIT;
-    }
-
     HAL_MutexUnlock(context_mutex);
 
 }
 
-#else
+#ifdef SHARE_COAP_CONTEXT
 CoAPContext* alcs_context_init(CoAPInitParam *param)
 {
-    if (g_alcs_ctx) {
-        return g_alcs_ctx->ctx;
+    HAL_MutexLock(context_mutex);
+    if (!g_alcs_ctx.refCount) {
+        g_alcs_ctx.ctx = CoAPServer_init();
+        g_alcs_ctx.flag = 0;
+        COAP_INFO("CoAPServer_init return :%p", g_alcs_ctx.ctx);
     }
+    ++ g_alcs_ctx.refCount;
+    HAL_MutexUnlock(context_mutex);
 
-    g_alcs_ctx = (ALCSContext*)coap_malloc(sizeof(ALCSContext));
-    if (g_alcs_ctx) {
-        g_alcs_ctx->flag = 0;
-        g_alcs_ctx->ctx = CoAPServer_init();
-        COAP_INFO("CoAPServer_init return :%p", g_alcs_ctx->ctx);
-        if (!g_alcs_ctx->ctx) {
-            coap_free(g_alcs_ctx);
-            g_alcs_ctx = NULL;
-            return NULL;
-        }
-        return g_alcs_ctx->ctx;
-    } else {
-        return NULL;
-    }
+    return g_alcs_ctx.ctx;
 }
 
 void alcs_context_deinit()
 {
-    if (g_alcs_ctx) {
-        if (g_alcs_ctx->ctx) {CoAPServer_deinit(g_alcs_ctx->ctx);}
-        coap_free (g_alcs_ctx);
-        g_alcs_ctx = NULL;
+    HAL_MutexLock(context_mutex);
+    if (g_alcs_ctx.refCount > 0) {
+        -- g_alcs_ctx.refCount;
+        if (g_alcs_ctx.refCount <= 0) {
+            if (!(g_alcs_ctx.flag & RUNNING)) {
+                CoAPServer_deinit (g_alcs_ctx.ctx);
+                g_alcs_ctx.ctx = NULL;
+                g_alcs_ctx.flag = 0;
+            }
+        }
     }
+    HAL_MutexUnlock(context_mutex);
 }
 
 CoAPContext * alcs_get_context()
 {
-    return g_alcs_ctx? g_alcs_ctx->ctx : NULL;
+    return g_alcs_ctx.ctx;
 }
 
 #endif
@@ -343,30 +321,26 @@ CoAPContext * alcs_get_context()
 void alcs_start_loop (CoAPContext *ctx, int newThread)
 {
     void * handle = NULL;
-    HAL_MutexLock(context_mutex);
-    ALCSContext* alcs_ctx = get_context (ctx);
-    HAL_MutexUnlock(context_mutex);
 
-    if (alcs_ctx && !(alcs_ctx->flag & TORUN)) {
-        alcs_ctx->flag |= TORUN;
+    HAL_MutexLock(context_mutex);
+    if (!(g_alcs_ctx.flag & TORUN)) {
+        g_alcs_ctx.flag |= TORUN;
+        HAL_MutexUnlock(context_mutex);
 
         int stack_used = 0;
-        if (!newThread || 0 != HAL_ThreadCreate (&handle, thread_routine, alcs_ctx, NULL, &stack_used)) {
+        if (!newThread || 0 != HAL_ThreadCreate (&handle, thread_routine, &g_alcs_ctx, NULL, &stack_used)) {
             COAP_INFO ("call routine directly");
-            thread_routine (alcs_ctx);
+            thread_routine (&g_alcs_ctx);
         }
+    } else {
+        HAL_MutexUnlock(context_mutex);
     }
 }
 
 void alcs_stop_loop (CoAPContext *ctx)
 {
     HAL_MutexLock(context_mutex);
-
-    ALCSContext* alcs_ctx = get_context (ctx);
-    if (alcs_ctx) {
-        alcs_ctx->flag &= ~TORUN;
-    }
-
+    g_alcs_ctx.flag &= ~TORUN;
     HAL_MutexUnlock(context_mutex);
 }
 
@@ -379,14 +353,14 @@ void alcs_init ()
 
 void alcs_deinit()
 {
-	resource_cb_item* del_item = NULL;
+    resource_cb_item* del_item = NULL;
 
-	list_for_each_entry(del_item,&resource_cb_head,lst,resource_cb_item)
-	{
-		list_del(&del_item->lst);
-		coap_free(del_item);
-		del_item = list_entry(&resource_cb_head,resource_cb_item,lst);
-	}
+    list_for_each_entry(del_item,&resource_cb_head,lst,resource_cb_item)
+    {
+        list_del(&del_item->lst);
+        coap_free(del_item);
+        del_item = list_entry(&resource_cb_head,resource_cb_item,lst);
+    }
 }
 
 static int path_2_option(const char *uri, CoAPMessage *message)
@@ -397,7 +371,7 @@ static int path_2_option(const char *uri, CoAPMessage *message)
 
     if (256 < strlen(uri)) {
         COAP_ERR("The uri length is too loog,len = %d", (int)strlen(uri));
-        return COAP_ERROR_INVALID_LENGTH;
+        return ALCS_ERR_INVALID_LENGTH;
     }
     COAP_DEBUG("The uri is %s", uri);
     ptr = pstr = uri;
@@ -422,24 +396,25 @@ static int path_2_option(const char *uri, CoAPMessage *message)
         }
         ptr ++;
     }
-    return COAP_SUCCESS;
+    return ALCS_SUCCESS;
 }
 
 int alcs_msg_setAddr (CoAPMessage *message, const char* path, const char* query)
 {
     if (NULL == path || NULL == message) {
         COAP_ERR("Invalid paramter p_path %p, p_message %p", path, message);
-        return COAP_ERROR_INVALID_PARAM;
+        return ALCS_ERR_INVALID_PARAM;
     }
 
     if (255 < strlen(path)) {
         COAP_ERR("The uri length is too loog,len = %d", (int)strlen(path));
-        return COAP_ERROR_INVALID_LENGTH;
+        return ALCS_ERR_INVALID_LENGTH;
     }
 
     int rt = path_2_option (path, message);
-    if (query) {
-        CoAPStrOption_add (message, COAP_OPTION_URI_QUERY, (unsigned char*)query, strlen(query));
+    int len = query? strlen(query) : 0;
+    if (len) {
+        CoAPStrOption_add (message, COAP_OPTION_URI_QUERY, (unsigned char*)query, len);
     }
 
     return rt;

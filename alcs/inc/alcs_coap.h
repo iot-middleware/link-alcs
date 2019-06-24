@@ -48,11 +48,11 @@ void alcs_stop_loop (CoAPContext *ctx);
 int alcs_observe_notify(CoAPContext *context, const char *path, CoAPLenString* payload);
 
 //resource
-//success: return COAP_SUCCESS
+//success: return ALCS_SUCCESS
 int alcs_resource_register(CoAPContext *context, const char* pk, const char* dn, const char *path, unsigned short permission,
             unsigned int ctype, unsigned int maxage, char needAuth, CoAPRecvMsgHandler callback);
 
-//success: return COAP_SUCCESS
+//success: return ALCS_SUCCESS
 int alcs_resource_unregister(CoAPContext *context, const char *path);
 
 int alcs_resource_need_auth (CoAPContext *context, const char *path);
@@ -62,10 +62,10 @@ int alcs_resource_need_auth (CoAPContext *context, const char *path);
 void alcs_init ();
 void alcs_deinit();
 
-#ifdef SUPPORT_MULTI_DEVICES
 CoAPContext* alcs_context_create(CoAPInitParam *param);
 void alcs_context_free(CoAPContext *ctx);
-#else
+
+#ifdef SHARE_COAP_CONTEXT
 CoAPContext* alcs_context_init(CoAPInitParam *param);
 void alcs_context_deinit();
 CoAPContext * alcs_get_context();

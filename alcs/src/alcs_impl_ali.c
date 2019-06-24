@@ -32,7 +32,16 @@ typedef struct inner_conn_param
     NetworkAddr addr;
     void* user_data;
     alcs_connect_cb conn_cb;
+    bool connected;    
 } inner_conn_param_t, *inner_conn_param_pt;
+
+typedef struct inner_probe_param
+{
+    char pk[MAXPK_LEN + 1];
+    char dn[MAXDN_LEN + 1];
+    void* user_data;
+    alcs_probe_cb probe_cb;
+} inner_probe_param_t, *inner_probe_param_pt;
 
 typedef struct inner_resource_cb_save
 {
@@ -87,6 +96,7 @@ CoAPContext* g_coap_ctx = NULL;
 static int g_discovery_id = 0;
 static int g_userdata_maxid = 0;
 static alcs_disconnect_cb disconnect_cb = NULL; 
+static alcs_discovery_cb new_device_online_cb = NULL;
 
 static void convert2alcsnetworkaddr (alcs_network_addr_t* addr1, NetworkAddr* addr2);
 static inner_conn_param_pt get_connection (const char* pk, const char* dn);
@@ -95,6 +105,7 @@ static inner_conn_param_pt find_connection (void* data);
 static inner_subcribe_param_pt find_subcribe (void* data);
 static void disconnect_notify_cb(const char* pk_dn);
 static void do_clear_discovery_task (int task_id);
+void alcs_rec_device_online (CoAPContext *context, const char *paths, NetworkAddr *remote, CoAPMessage *request);
 
 int iot_alcs_init(const char* pk, const char* dn, alcs_role_t role)
 {
@@ -125,11 +136,7 @@ int iot_alcs_init(const char* pk, const char* dn, alcs_role_t role)
     alcs_init ();
 
     if (!g_coap_ctx) {
-#ifdef SUPPORT_MULTI_DEVICES
-    g_coap_ctx = alcs_context_create(&param);
-#else
-    g_coap_ctx = alcs_context_init(&param);
-#endif
+        g_coap_ctx = alcs_context_create(&param);
     }
 
     if (!g_coap_ctx) {
@@ -145,6 +152,7 @@ int iot_alcs_init(const char* pk, const char* dn, alcs_role_t role)
         }
     }
 
+    COAP_INFO ("iot_alcs_init role:%d",role);
     if (role & ALCS_ROLE_CLIENT) {
         alcs_conn_list = linked_list_create("alcs connection list", 1);
         if (alcs_conn_list == NULL) {
@@ -160,6 +168,8 @@ int iot_alcs_init(const char* pk, const char* dn, alcs_role_t role)
             return ALCS_RESULT_INSUFFICIENT_MEM;
         }
 
+        alcs_resource_register (g_coap_ctx, "", "", "/dev/core/service/dev/notify",
+             COAP_PERM_GET|COAP_PERM_POST, COAP_CT_APP_JSON, 60, 0, alcs_rec_device_online);
         alcs_client_disconnect_notify (disconnect_notify_cb);
 
         alcs_timer_init ();
@@ -206,11 +216,7 @@ void iot_alcs_deinit(void)
     HAL_MutexUnlock(g_alcs_mutex);
 
     alcs_timer_deinit ();
-#ifdef SUPPORT_MULTI_DEVICES
     alcs_context_free(g_coap_ctx);
-#else
-    alcs_context_deinit(g_coap_ctx);
-#endif
     g_coap_ctx = NULL;
 }
 
@@ -256,7 +262,7 @@ static int connection_iterator_ck (void* data, va_list *params)
         return 0;
     }
 
-    return (strncmp(conn_param->ck, ck, PK_DN_CHECKSUM_LEN) == 0);
+    return (memcmp(conn_param->ck, ck, PK_DN_CHECKSUM_LEN) == 0);
 }
 
 static int userdata_iterator_id (void* data, va_list *params)
@@ -286,7 +292,7 @@ static int subcribe_iterator_ck (void* data, va_list *params)
         return 0;
     }
 
-    return (strncmp(sub_param->path_ck, ck, PATH_CK_LEN) == 0);
+    return (memcmp(sub_param->path_ck, ck, PATH_CK_LEN) == 0);
 }
 
 static inner_conn_param_pt get_connection (const char* pk, const char* dn)
@@ -324,9 +330,9 @@ static inner_subcribe_param_pt find_subcribe (void* data)
     return NULL;
 }
 
-static inner_subcribe_param_pt get_subcribe_by_ck (const char* pk_dn)
+static inner_subcribe_param_pt get_subcribe_by_ck (const char* ck)
 {
-    list_node_t* node = get_list_node (alcs_subcribe_list, subcribe_iterator_ck, pk_dn);
+    list_node_t* node = get_list_node (alcs_subcribe_list, subcribe_iterator_ck, ck);
     return node? (inner_subcribe_param_pt)node->data : NULL;
 }
 
@@ -395,7 +401,7 @@ static void auth_cb (CoAPContext *context, NetworkAddr* addr, void* user_data, R
     int id  = (int)(intptr_t)user_data;
     alcs_connect_cb conn_cb = NULL;
     alcs_device_key_t devKey;
-    void* connect_user_data;
+    void* connect_user_data = NULL;
 
     HAL_MutexLock(g_alcs_mutex);
     connection = (inner_conn_param_pt)get_user_data (id);    
@@ -408,6 +414,8 @@ static void auth_cb (CoAPContext *context, NetworkAddr* addr, void* user_data, R
         if (ALCS_CONN_OK != result->code) {
             linked_list_remove (alcs_conn_list, connection);
             remove_user_data (get_user_data_id(connection), 0);
+        } else {
+	    connection->connected = 1;
         }
 
         conn_cb = connection->conn_cb;
@@ -420,6 +428,20 @@ static void auth_cb (CoAPContext *context, NetworkAddr* addr, void* user_data, R
 
     if (connection && ALCS_CONN_OK != result->code) {
         coap_free (connection);
+    }
+}
+
+static void noconnect_notify (inner_conn_param_pt connection, alcs_network_addr_pt addr)
+{
+    alcs_device_key_t devKey;
+
+    if (connection) {
+        devKey.pk = connection->pk;
+        devKey.dn = connection->dn;
+        memcpy(&devKey.addr, addr, sizeof(alcs_network_addr_t));
+
+        connection->conn_cb (&devKey, connection->user_data,
+            connection->connected? ALCS_CONN_OK : ALCS_CONN_CONNECTING, "");
     }
 }
 
@@ -439,8 +461,10 @@ int iot_alcs_device_connect (alcs_network_addr_pt paddr, alcs_connect_param_pt c
     }
 
     HAL_MutexLock(g_alcs_mutex);    
-    if (get_connection(conn_param->pk, conn_param->dn) != NULL) {
+    connection = get_connection(conn_param->pk, conn_param->dn);
+    if (connection != NULL) {
         HAL_MutexUnlock(g_alcs_mutex);
+        noconnect_notify (connection, paddr);
         return ALCS_RESULT_DUPLICATE;
     }
 
@@ -460,6 +484,7 @@ int iot_alcs_device_connect (alcs_network_addr_pt paddr, alcs_connect_param_pt c
     connection->addr.port = paddr->port; 
     connection->user_data = conn_param->user_data;
     connection->conn_cb = conn_param->conn_cb;
+    connection->connected = 0;
 
     linked_list_insert (alcs_conn_list, connection);
     id = add_user_data (connection);
@@ -477,17 +502,15 @@ int iot_alcs_device_connect (alcs_network_addr_pt paddr, alcs_connect_param_pt c
         auth_param.accessToken = auth_info->at;
         auth_param.user_data = (void*)(intptr_t)id;
         auth_param.handler = auth_cb;
-        alcs_auth_has_key (g_coap_ctx, &connection->addr, &auth_param);
+        return alcs_auth_has_key (g_coap_ctx, &connection->addr, &auth_param);
     } else {
         AlcsDeviceKey devKey;
         devKey.pk = conn_param->pk;
         devKey.dn = conn_param->dn;
         strncpy (devKey.addr.addr, paddr->addr, sizeof(devKey.addr.addr) - 1);
         devKey.addr.port = paddr->port;
-        alcs_auth_nego_key (g_coap_ctx, &devKey, auth_cb);
+        return alcs_auth_nego_key (g_coap_ctx, &devKey, auth_cb);
     }
-
-    return ALCS_RESULT_OK;
 }
 
 int iot_alcs_device_disconnect (const char* pk, const char* dn)
@@ -515,6 +538,10 @@ int iot_alcs_device_disconnect (const char* pk, const char* dn)
 
     alcs_auth_disconnect (g_coap_ctx, &devKey);
     coap_free (connection);    
+    
+    if (disconnect_cb) {
+        disconnect_cb (pk, dn);
+    }
 
     return ALCS_RESULT_OK;
 }
@@ -561,6 +588,76 @@ static void disconnect_notify_cb(const char* pk_dn)
     coap_free (connection);
 }
 
+static void device_online_notify (alcs_device_discovery_info_pt device, char* data, int len)
+{
+    int pklen, dnlen;
+    COAP_DEBUG ("device_online_notify data:%.*s", len, data);
+
+    device->pk = alcs_json_get_value_by_name(data, len, "productKey", &pklen, (int*)NULL);
+    device->dn = alcs_json_get_value_by_name(data, len, "deviceName", &dnlen, (int*)NULL);
+
+    if (device->pk && pklen && device->dn && dnlen) {
+        char pkback, dnback;
+
+        backup_json_str_last_char (device->pk, pklen, pkback);
+        backup_json_str_last_char (device->dn, dnlen, dnback);
+        if (new_device_online_cb) {
+            new_device_online_cb (device);
+        }
+        restore_json_str_last_char (device->pk, pklen, pkback);
+        restore_json_str_last_char (device->dn, dnlen, dnback);
+    }
+
+}
+void alcs_rec_device_online (CoAPContext *context, const char *paths, NetworkAddr *remote, CoAPMessage *request)
+{
+    alcs_device_discovery_info_t device;
+    int paramslen, deviceslen, profilelen, pallen;
+    char *params, *devices, *profile, *pal, palback;
+
+    COAP_DEBUG ("alcs_rec_device_online, len:%d, data:%s", request->payloadlen, request->payload);
+
+    convert2alcsnetworkaddr(&device.from, remote);
+    params = alcs_json_get_value_by_name((char*)request->payload, request->payloadlen, "params", &paramslen, (int*)NULL);
+    if (!params || !paramslen) {
+        COAP_DEBUG ("params is not found");
+        return;
+    }
+    
+    devices = alcs_json_get_value_by_name((char*)params, paramslen, "devices", &deviceslen, (int*)NULL);
+    
+    if (!devices || !deviceslen) {
+        COAP_DEBUG ("devices is not found");
+        return;
+    }
+
+    pal = alcs_json_get_value_by_name(devices, deviceslen, "pal", &pallen, (int*)NULL);
+    profile = alcs_json_get_value_by_name(devices, deviceslen, "profile", &profilelen, (int*)NULL);
+    
+    if (pal && pallen) {
+        device.pal = pal;
+        backup_json_str_last_char (pal, pallen, palback);
+    } else {//default
+        device.pal = "linkkit-ica";
+    }
+    
+    if (profile && profilelen) {
+        char profileback;
+        char *str_pos, *entry;
+        int entry_len, type;
+
+        backup_json_str_last_char (profile, profilelen, profileback);
+        json_array_for_each_entry(profile, profilelen, str_pos, entry, entry_len, type) {
+            device_online_notify (&device, entry, entry_len);
+        } //end json_array_for_each_entry
+        restore_json_str_last_char (profile, profilelen, profileback);
+    } //end if (profile && profilelen)
+
+    if (pal && pallen) {
+        restore_json_str_last_char (pal, pallen, palback);
+    }
+}
+
 void iot_alcs_set_disconnect_listener (alcs_disconnect_cb cb)
 {
     disconnect_cb = cb;
@@ -592,7 +689,7 @@ static void do_send_msg_cb (CoAPContext *context,
                 return;
             }
 
-            if (CoAPMessageCode_get (message, &code) == COAP_SUCCESS &&
+            if (CoAPMessageCode_get (message, &code) == ALCS_SUCCESS &&
                 code >= COAP_MSG_CODE_201_CREATED && code <= COAP_MSG_CODE_231_CONTINUE)
             {
                 msg_result.result_code = ALCS_SEND_OK;
@@ -666,6 +763,7 @@ static inner_send_msg_pt formatMessage (CoAPMessage* msg, alcs_msg_param_pt msg_
     if (keep) {
         CoAPMessageId_get (msg, &send_msg->msg_id);
     }
+    option->msgId = msg->header.msgid;
     return send_msg;
 }
 
@@ -691,9 +789,97 @@ static void* get_discovery_pkdn (linked_list_t* list, void* ck)
     return data; 
 }
 
-static void discovery_notify (char* data, int len, alcs_network_addr_t addr, void* user_data)
+static void do_probe_cb (CoAPContext *context,
+                        CoAPReqResult result,
+                        void *userdata,
+                        NetworkAddr *remote,
+                        CoAPMessage *message)
 {
-    int pklen, dnlen, pallen;
+    alcs_probe_result_t probe_result = {0};
+    int id = (int)(intptr_t)userdata;
+    inner_probe_param_pt probe_param = get_user_data(id);
+    if (!probe_param) {
+        return;
+    }
+    probe_result.pk = probe_param->pk;
+    probe_result.dn = probe_param->dn;
+    probe_result.user_data = probe_param->user_data;
+
+    switch (result) {
+        case COAP_REQUEST_SUCCESS: {
+            CoAPMessageCode code;
+            if (message == NULL) {
+                COAP_ERR ("do_probe_cb, message is NULL!");
+                return;
+            }
+            
+            if (CoAPMessageCode_get (message, &code) == ALCS_SUCCESS &&
+                code >= COAP_MSG_CODE_201_CREATED && code <= COAP_MSG_CODE_231_CONTINUE)
+            {   
+                probe_result.result_code = ALCS_SEND_OK;
+            } else {
+                probe_result.error_reason = code;
+                probe_result.result_code = ALCS_SEND_RSPERROR;
+            }
+        }
+        break;
+        case COAP_RECV_RESP_TIMEOUT: {
+            probe_result.result_code = ALCS_SEND_TIMEOUT;
+        }
+        break;
+    }
+
+    probe_param->probe_cb (&probe_result);
+    remove_user_data (id, 1);
+}
+
+static int do_probe (alcs_network_addr_pt alcs_addr, inner_probe_param_pt probe_param)
+{
+    char* method = "/dev/core/service/dev";
+    char* payload = "{\"id\":\"1\",\"version\":\"1.0\",\"params\":{},\"method\":\"core.service.dev\"}";
+    NetworkAddr addr;
+    CoAPMessage msg;
+    CoAPLenString obj_payload;
+
+    memcpy (addr.addr, alcs_addr->addr, sizeof(alcs_addr->addr));
+    addr.port = alcs_addr->port;
+    obj_payload.data = (unsigned char*)payload;
+    obj_payload.len = strlen(payload);
+    
+    int id = add_user_data (probe_param);
+    if (id <= 0) {
+        coap_free (probe_param);
+        return ALCS_RESULT_INSUFFICIENT_MEM;
+    }
+    COAP_DEBUG ("formatMessage, id:%d", id);
+    
+    alcs_msg_init (g_coap_ctx, &msg, ALCS_MSG_CODE_GET, ALCS_MSG_TYPE_CON, 0, &obj_payload, (void*)(intptr_t)id);
+    alcs_msg_setAddr (&msg, method, "");
+    return alcs_sendmsg (g_coap_ctx, &addr, &msg, 2, do_probe_cb);
+}
+
+int iot_alcs_device_probe(alcs_prob_param_pt param, alcs_probe_cb cb)
+{
+    COAP_DEBUG ("iot_alcs_device_probe");
+    if (!param || !param->pk || !param->dn || !cb) {
+        return ALCS_RESULT_INVALIDPARAM;
+    }
+    
+    inner_probe_param_pt probe_param = coap_malloc(sizeof(inner_probe_param_t));
+    if (!probe_param) {
+        return ALCS_RESULT_INSUFFICIENT_MEM;
+    }
+    strncpy (probe_param->pk, param->pk, MAXPK_LEN);
+    strncpy (probe_param->dn, param->dn, MAXDN_LEN);
+    probe_param->probe_cb = cb;
+    probe_param->user_data = param->user_data;
+
+    return do_probe(&param->addr, probe_param);
+}
+
+static void discovery_notify (char* data, int len, alcs_network_addr_t addr, void* user_data, char* pal, int pallen)
+{
+    int pklen, dnlen;
     alcs_device_discovery_info_t device;
     inner_discovery_param_pt task;
     alcs_discovery_cb cb = NULL;
@@ -705,7 +891,14 @@ static void discovery_notify (char* data, int len, alcs_network_addr_t addr, voi
     device.from = addr;
     device.pk = alcs_json_get_value_by_name(data, len, "productKey", &pklen, (int*)NULL);
     device.dn = alcs_json_get_value_by_name(data, len, "deviceName", &dnlen, (int*)NULL);
-    device.pal = alcs_json_get_value_by_name(data, len, "pal", &pallen, (int*)NULL);
+    if (!pal || !pallen) {
+        device.pal = alcs_json_get_value_by_name(data, len, "pal", &pallen, (int*)NULL);
+    } else if (pal && pallen) {
+        device.pal = pal;
+    } else {//default
+        device.pal = "linkkit-ica";
+    }
+
     if (device.pk && pklen && device.dn && dnlen) {
         char pkback, dnback, palback = '\0';
         char ck[PK_DN_CHECKSUM_LEN];
@@ -716,8 +909,9 @@ static void discovery_notify (char* data, int len, alcs_network_addr_t addr, voi
         HAL_Snprintf(path, sizeof(path) -1, "%s%s", device.pk, device.dn);
         CoAPPathMD5_sum (path, strlen(path), ck, PK_DN_CHECKSUM_LEN);
  
+        COAP_DEBUG ("userdata:%d, discovery_id:%d", (int)(intptr_t)user_data, g_discovery_id);
+        
         HAL_MutexLock(g_alcs_mutex);
-        COAP_INFO ("userdata:%d, discovery_id:%d", (int)(intptr_t)user_data, g_discovery_id);
         if ((int)(intptr_t)user_data == g_discovery_id) {
             task = (inner_discovery_param_pt)get_user_data (g_discovery_id);
             if (task) {
@@ -725,27 +919,28 @@ static void discovery_notify (char* data, int len, alcs_network_addr_t addr, voi
                     COAP_INFO ("device %s,%s is in list", device.pk, device.dn);
                 } else {
                     cb = (alcs_discovery_cb)task->cb;
-                    char* p = coap_malloc (PK_DN_CHECKSUM_LEN);
-                    if (p) {
-                        memcpy (p, ck, PK_DN_CHECKSUM_LEN);
-                        linked_list_insert (task->rec_pkdn, p);
-                    }
                 } 
             }
         }
-        HAL_MutexUnlock(g_alcs_mutex);
        
         if (cb) {
+            char* p = coap_malloc (PK_DN_CHECKSUM_LEN);
+            if (p) {
+                memcpy (p, ck, PK_DN_CHECKSUM_LEN);
+                linked_list_insert (task->rec_pkdn, p);
+            }
+            HAL_MutexUnlock(g_alcs_mutex);
+            
             COAP_DEBUG ("find new device %s,%s", device.pk, device.dn);
-            if (device.pal && pallen) {
+            if (!pal && pallen) {
                 backup_json_str_last_char (device.pal, pallen, palback);
-            } else {
-                device.pal = "linkkit-ica";
             }
             cb (&device);
-            if (device.pal && pallen) {
+            if (!pal && pallen) {
                 restore_json_str_last_char (device.pal, pallen, palback);
             }            
+        } else {
+            HAL_MutexUnlock(g_alcs_mutex);
         }
 
         restore_json_str_last_char (device.pk, pklen, pkback);
@@ -784,15 +979,22 @@ static void discovery_handler (alcs_msg_result_pt result)
 
             profile = alcs_json_get_value_by_name(model, modellen, "profile", &profilelen, (int*)NULL);
             if (profile && profilelen) {
-                discovery_notify (profile, profilelen, result->addr, result->user_data);
+                discovery_notify (profile, profilelen, result->addr, result->user_data, NULL, 0);
             }
         }
 
         devices = alcs_json_get_value_by_name(data, datalen, "devices", &deviceslen, (int*)NULL);
         if (devices && deviceslen) {
-            int profilelen;
+            int profilelen, pallen;
+            char palback = '\0';
             char* profile;
+            char* pal = alcs_json_get_value_by_name(devices, deviceslen, "pal", &pallen, (int*)NULL);
             profile = alcs_json_get_value_by_name(devices, deviceslen, "profile", &profilelen, (int*)NULL);
+            
+            if (pal && pallen) {
+                backup_json_str_last_char (pal, pallen, palback);
+            }
+            
             if (profile && profilelen) {
                 char profileback;
                 char *str_pos, *entry;
@@ -800,22 +1002,35 @@ static void discovery_handler (alcs_msg_result_pt result)
 
                 backup_json_str_last_char (profile, profilelen, profileback);
                 json_array_for_each_entry(profile, profilelen, str_pos, entry, entry_len, type) {
-                    discovery_notify (entry, entry_len, result->addr, result->user_data);
+                    discovery_notify (entry, entry_len, result->addr, result->user_data, pal, pallen);
                 } //end json_array_for_each_entry
                 restore_json_str_last_char (profile, profilelen, profileback);
             } //end if (profile && profilelen)
+            
+            if (pal && pallen) {
+                restore_json_str_last_char (pal, pallen, palback);
+            }
         }
     }
 }
 
+void iot_alcs_set_new_device_listener (alcs_discovery_cb cb)
+{
+    new_device_online_cb = cb;
+}
+
 static int do_discovery (inner_discovery_param_pt task)
 {
+    static int seq = 0;
     char* method = "/dev/core/service/dev";
-    char* payload = "{\"id\":\"1\",\"version\":\"1.0\",\"params\":{},\"method\":\"core.service.dev\"}";
+    const char* payload_format = "{\"id\":\"%d\",\"version\":\"1.0\",\"params\":{},\"method\":\"core.service.dev\"}";
+    char payload[128];
     alcs_msg_param_option_t option = {0};
     alcs_msg_param_t msg_param;
     NetworkAddr addr;
     CoAPMessage msg;
+
+    snprintf (payload, sizeof(payload), payload_format, ++seq);
 
     option.method = method;
     option.msg_code = ALCS_MSG_CODE_GET;
@@ -918,6 +1133,7 @@ int iot_alcs_discovery_device (int timeout, alcs_discovery_cb cb, discovery_fini
 
     HAL_MutexLock(g_alcs_mutex);
     if (g_discovery_id) {
+        COAP_DEBUG ("discovery task is found!");
         HAL_MutexUnlock(g_alcs_mutex);
         return ALCS_RESULT_DUPLICATE;
     }
@@ -1005,7 +1221,7 @@ int iot_alcs_send(alcs_msg_param_pt msg_param, alcs_send_msg_cb cb)
     devicekey.pk = msg_param->pk;
     devicekey.dn = msg_param->dn;
 
-    return alcs_sendmsg_secure (g_coap_ctx, &devicekey, &msg, 2, do_send_msg_cb) == COAP_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
+    return alcs_sendmsg_secure (g_coap_ctx, &devicekey, &msg, 2, do_send_msg_cb) == ALCS_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
 }
 
 static void subcribe_handler (CoAPContext *context,
@@ -1045,7 +1261,7 @@ static void subcribe_handler (CoAPContext *context,
         case COAP_REQUEST_SUCCESS: {
             CoAPMessageCode code;
             unsigned int obsVal;
-            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) != COAP_SUCCESS) {
+            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) != ALCS_SUCCESS) {
                 linked_list_remove (alcs_subcribe_list, sub_param);    
             }
             
@@ -1057,7 +1273,7 @@ static void subcribe_handler (CoAPContext *context,
                 msg_result.dn = connection->dn;
                 convert2alcsnetworkaddr(&msg_result.addr, remote);
 
-                if (CoAPMessageCode_get (message, &code) == COAP_SUCCESS &&
+                if (CoAPMessageCode_get (message, &code) == ALCS_SUCCESS &&
                     code >= COAP_MSG_CODE_201_CREATED && code <= COAP_MSG_CODE_231_CONTINUE)
                 {
                     msg_result.result_code = ALCS_SEND_OK;
@@ -1077,7 +1293,7 @@ static void subcribe_handler (CoAPContext *context,
                 sub_cb = sub_param->sub_cb;
             }
 
-            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) != COAP_SUCCESS) {
+            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) != ALCS_SUCCESS) {
                 coap_free (sub_param);
             }
         }
@@ -1116,7 +1332,7 @@ int do_subcribe (alcs_sub_param_pt sub_param, int subcribe, alcs_send_msg_cb rsp
     char ck[PATH_CK_LEN];
     int id;
 
-    if (!sub_param || !sub_param->sub_option|| !rsp_cb || !sub_cb) {
+    if (!sub_param || !sub_param->sub_option|| !rsp_cb) {
         return ALCS_RESULT_INVALIDPARAM;
     }
 
@@ -1153,6 +1369,7 @@ int do_subcribe (alcs_sub_param_pt sub_param, int subcribe, alcs_send_msg_cb rsp
     sub_save->sub_cb = sub_cb;
     sub_save->rsp_cb = rsp_cb;
     sub_save->user_data = sub_param->user_data;
+    memcpy (sub_save->path_ck, ck, PATH_CK_LEN);
 
     payload.len = sub_param->payload_len;
     payload.data = sub_param->payload;
@@ -1164,7 +1381,7 @@ int do_subcribe (alcs_sub_param_pt sub_param, int subcribe, alcs_send_msg_cb rsp
     devicekey.pk = sub_param->pk;
     devicekey.dn = sub_param->dn;
 
-    return alcs_sendmsg_secure (g_coap_ctx, &devicekey, &msg, subcribe? 0 : 1, subcribe_handler) == COAP_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
+    return alcs_sendmsg_secure (g_coap_ctx, &devicekey, &msg, subcribe? 0 : 1, subcribe_handler) == ALCS_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
 }
 
 int iot_alcs_subcribe (alcs_sub_param_pt sub_param, alcs_send_msg_cb rsp_cb, alcs_sub_cb sub_cb)
@@ -1194,7 +1411,7 @@ int iot_alcs_unsubcribe (alcs_sub_param_pt sub_param, alcs_send_msg_cb cb)
 
 int iot_alcs_add_device (const char* pk, const char* dn)
 {
-    return alcs_auth_subdev_init (g_coap_ctx, pk, dn) == COAP_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
+    return alcs_auth_subdev_init (g_coap_ctx, pk, dn) == ALCS_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
 }
     
 int iot_alcs_remove_device (const char* pk, const char* dn)
@@ -1236,7 +1453,7 @@ static void resource_list_handler(void *list_node, va_list *params)
             CoAPMessageToken_get(message, ctx->token, &ctx->tokenlen);
 
             unsigned int obsVal;
-            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) == COAP_SUCCESS) {
+            if (CoAPUintOption_get (message, COAP_OPTION_OBSERVE, &obsVal) == ALCS_SUCCESS) {
                 ctx->observe = (unsigned char)obsVal;
             } else {
                 ctx->observe = 2;
@@ -1327,7 +1544,7 @@ int iot_alcs_register_service(alcs_service_param_pt svr_param, alcs_service_cb c
     int result = alcs_resource_register (g_coap_ctx, svr_param->pk, svr_param->dn, (char*)svr_param->service,
             svr_param->perm, svr_param->content_type, svr_param->maxage, svr_param->secure, resource_cb); 
 
-    if (result == COAP_SUCCESS) {
+    if (result == ALCS_SUCCESS) {
         linked_list_insert(alcs_resource_list, cb_param);
         return ALCS_RESULT_OK;
     } else {
@@ -1370,7 +1587,7 @@ int iot_alcs_add_and_update_authkey (void* auth_info)
     buffer[p->as_len] = 0;
     rt = alcs_add_svr_key (g_coap_ctx, ac, buffer);
 
-    if (rt != COAP_SUCCESS) {
+    if (rt != ALCS_SUCCESS) {
         return ALCS_RESULT_INSUFFICIENT_MEM;
     }
 
@@ -1380,7 +1597,7 @@ int iot_alcs_add_and_update_authkey (void* auth_info)
         rt = alcs_set_revocation (g_coap_ctx, buffer);
     }
     
-    return rt != COAP_SUCCESS? ALCS_RESULT_FAIL : ALCS_RESULT_OK;
+    return rt != ALCS_SUCCESS? ALCS_RESULT_FAIL : ALCS_RESULT_OK;
 }
 
 int iot_alcs_remove_authkey (void* auth_info)
@@ -1392,7 +1609,7 @@ int iot_alcs_remove_authkey (void* auth_info)
     }
 
     strncpy (ac, p->ac, sizeof(ac) - 1);
-    return alcs_remove_svr_key (g_coap_ctx, ac) == COAP_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
+    return alcs_remove_svr_key (g_coap_ctx, ac) == ALCS_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
 }
 
 //
@@ -1424,7 +1641,7 @@ int iot_alcs_send_notify(alcs_notify_param_pt notify)
     CoAPLenString lenstr;
     lenstr.len = notify->payload_len;
     lenstr.data = notify->payload;
-    return alcs_observe_notify (g_coap_ctx, (char*)notify->option, &lenstr) == COAP_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
+    return alcs_observe_notify (g_coap_ctx, (char*)notify->option, &lenstr) == ALCS_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
 }
 
 int iot_alcs_send_rsp(alcs_rsp_msg_param_pt rsp_msg, void* cb_ctx)
@@ -1463,7 +1680,7 @@ int iot_alcs_send_rsp(alcs_rsp_msg_param_pt rsp_msg, void* cb_ctx)
     }
 
     coap_free (cb_ctx);
-    return rt == COAP_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
+    return rt == ALCS_SUCCESS? ALCS_RESULT_OK : ALCS_RESULT_FAIL;
 }
 
 void iot_set_coap_log (int log_level)

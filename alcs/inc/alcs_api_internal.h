@@ -118,25 +118,11 @@ typedef struct {
     struct list_head lst_ctl_sessions;
 #endif
     char role;
+    char is_inited;
     struct list_head lst;
 } device_auth_list;
 
-#ifdef SUPPORT_MULTI_DEVICES
-extern struct list_head device_list;
 
-device_auth_list* get_device(CoAPContext *context);
-
-auth_list* get_list(CoAPContext *context);
-
-#ifdef ALCSCLIENT
-struct list_head* get_ctl_session_list (CoAPContext *context);
-#endif
-
-#ifdef ALCSSERVER
-struct list_head* get_svr_session_list (CoAPContext *context);
-#endif
-
-#else
 extern device_auth_list _device;
 #define get_device(v) (&_device)
 
@@ -148,7 +134,6 @@ extern device_auth_list _device;
 #endif
 
 #define get_list(v) (&_device.lst_auth)
-#endif
 
 void remove_session_safe (CoAPContext *ctx, session_item *session);
 void remove_session (CoAPContext *ctx, session_item *session);

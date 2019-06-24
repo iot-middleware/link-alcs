@@ -67,7 +67,7 @@ extern char* coap_level_desc[];
 
 #define coap_log(level, ...) \
     if (level >= coap_level && level <= COAP_LOG_ERR) {\
-        fprintf(stderr, "\r\n[%ld][%s][%s LINE #%d]   ", time(NULL), coap_level_desc[level], __FILE__, __LINE__); \
+        fprintf(stderr, "\r\n[%lld][%s][%s LINE #%d]   ", HAL_UptimeMs(), coap_level_desc[level], __FILE__, __LINE__); \
         fprintf(stderr, __VA_ARGS__);\
     }
 

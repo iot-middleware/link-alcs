@@ -34,9 +34,10 @@ void iot_alcs_set_disconnect_listener (alcs_disconnect_cb cb);
 /**************** discovery api ********************/
 
 int iot_alcs_discovery_device (int timeout, alcs_discovery_cb cb, void (*finish_cb)());
-
+int iot_alcs_device_probe(alcs_prob_param_pt prob_param, alcs_probe_cb cb);
 void iot_alcs_stop_discovery_device ();
 
+void iot_alcs_set_new_device_listener (alcs_discovery_cb cb);
 /**************** sender/receiver api ********************/
 
 /**

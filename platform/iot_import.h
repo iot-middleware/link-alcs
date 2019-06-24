@@ -541,10 +541,6 @@ int HAL_UDP_joinmulticast(intptr_t           sockfd,
                            const char        *p_group);
 
 
-void *HAL_Timer_Create(const char *name, void (*func)(void *), void *user_data);
-int HAL_Timer_Start(void *timer, int ms);
-int HAL_Timer_Stop(void *timer);
-int HAL_Timer_Delete(void *timer);
 
 #define PRODUCT_KEY_MAXLEN          (20 + 1)
 #define DEVICE_ID_MAXLEN            (32 + 1)
